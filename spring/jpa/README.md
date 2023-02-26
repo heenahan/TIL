@@ -1,4 +1,6 @@
 # Spring/JPA
+1. [요청과 응답으로 엔티티 대신 DTO 사용](#요청과-응답으로-엔티티-대신-DTO-사용)
+2. [엔티티 수정은 병합(merge)보다 변경 감지(Dirty Checking))](#엔티티-수정은-병합(merge)보다-변경-감지(Dirty Checking))
 
 ## 요청과 응답으로 엔티티 대신 DTO 사용
 
@@ -158,8 +160,65 @@ static class MemberDto {
 }
 ```
 
+## 엔티티 수정은 병합(merge)보다 변경 감지(Dirty Checking)
+
+엔티티의 값이 변경되었을 때 JPA는 어떻게 처리할까?
+
+병합(merge)과 변경 감지(Dirty Checking) 두 방법이 존재하고 이 둘을 비교해보겠다. 
+
+먼저 병합(merge)을 사용하는 코드이다.
+```java
+// ItemRepository.java
+public void save(Item item) {
+    if (item.getId() == null) {
+        em.persist(item);
+    } else {
+        Item mergeItem = em.merge(item);
+    }
+}
+```
+Item 엔티티에 식별자가 없다면 DB에 저장되지 않은 새로운 값으므로 영속화(persist)한다.
+하지만 식별자가 존재한다면 병합(merge)한다. 병합은 다음과 같이 동작한다.
+
+먼저 파라미터로 들어오는 식별자가 있는 엔티티는 준영속 상태이다. 
+준영속이란 영속성 컨텍스트(JPA)가 더 이상 관리하지 않는 엔티티이다.
+반대로 영속이란 영속선 컨텍스트(JPA)가 관리하는 엔티티이다.
+
+merge가 호출되면 파라미터로 넘어온 준영속 엔티티(item)를 영속 엔티티로 만든다. 
+그리고 준영속 엔티티의 값을 영속 엔티티에 모두 밀어넣는다.
+마지막으로 영속 상태인 엔티티를 반환한다. 위에서 mergeItem이 영속 엔티티이다.
+
+하지만 병합은 단점이 존재한다. **엔티티의 모든 값을 변경한다는 점**이다. 
+예를 들어 Item 엔티티에는 식별자, 이름, 가격, 재고 속성을 가지고 있다. 
+하지만 우리는 가격만 수정하고 싶어 나머지는 null값이고 변경된 가격 값만 객체에 넣어 전송했다.
+이때 모든 속성값이 변경되어 null로 수정된다.
+
+반대로 변경 감지(Dirty Checking)을 사용한 코드이다.
+```java
+// ItemService.java
+@Transactional
+public void updateItem(Long itemId, UpdateItemDto param) {
+    Item findItem = itemRepository.findOne(itemId);
+    
+    findItem.setName(param.getName());
+    findItem.setPrice(param.getPrice());
+    findItem.setStockQuantity(param.getStockQuantity());
+}
+```
+먼저 파라미터로 식별자(itemId)와 변경할 데이터(param)가 DTO로 넘어왔다.
+컨트롤러 계층에서 엔티티를 생성해 넘기는 것보다 **식별자만 서비스 계층으로 넘기는 것**이 좋다. 
+
+컨트롤러에서 생성한 엔티티는 준영속 상태이다. 
+하지만 **Transaction이 있는 서비스 계층**에서 식별자를 이용해 영속 상태의 엔티티(findItem)를 조회할 수 있다.
+영속 상태의 엔티티의 값을 변경하고 트랜잭션이 commit되면 JPA는 변경 감지(Dirty Checking)를 실행한다.
+그리고 JPA는 DB로 update 쿼리를 날린다.
+
+엔티티를 수정할 때 모든 값을 수정하는 경우보단 일부만 수정하는 경우가 훨씬 많다.
+따라서 _엔티티를 수정할 땐 병합보다 변경 감지를 사용_ 하는 것이 좋다
+
 ## 후기
-아직 웹 계층 아키텍처에 대해 정확히 모르겠다. 나중에 제대로 공부해야지.
+아직 웹 계층 아키텍처에 대해 정확히 모르겠다.
+영속성 컨텍스트에 대해 좀 더 자세히 알아보자.
 
 ---
 
