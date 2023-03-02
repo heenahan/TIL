@@ -3,5 +3,6 @@
 
 ## Spring
 - JPA
-    - [요청과 응답으로 엔티티 대신 DTO 사용](https://github.com/heenahan/TIL/tree/main/spring/jpa)
-    - [엔티티 수정은 병합(merge)보다 변경 감지(Dirty Checking)](https://github.com/heenahan/TIL/tree/main/spring/jpa)
+    - [요청과 응답으로 엔티티 대신 DTO 사용](https://github.com/heenahan/TIL/tree/main/spring/jpa#요청과-응답으로-엔티티-대신-DTO-사용)
+    - [엔티티 수정은 병합(merge)보다 변경 감지(Dirty Checking)](https://github.com/heenahan/TIL/tree/main/spring/jpa#엔티티-수정은-병합(merge)보다-변경-감지(Dirty-Checking))
+    - [N + 1 문제](https://github.com/heenahan/TIL/tree/main/spring/jpa#N-+-1-문제)

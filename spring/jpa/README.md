@@ -1,6 +1,7 @@
 # Spring/JPA
 1. [요청과 응답으로 엔티티 대신 DTO 사용](#요청과-응답으로-엔티티-대신-DTO-사용)
-2. [엔티티 수정은 병합(merge)보다 변경 감지(Dirty Checking))](#엔티티-수정은-병합(merge)보다-변경-감지(Dirty Checking))
+2. [엔티티 수정은 병합(merge)보다 변경 감지(Dirty Checking)](#엔티티-수정은-병합(merge)보다-변경-감지(Dirty-Checking))
+3. [N + 1 문제](#N-+-1-문제)
 
 ## 요청과 응답으로 엔티티 대신 DTO 사용
 
@@ -215,6 +216,86 @@ public void updateItem(Long itemId, UpdateItemDto param) {
 
 엔티티를 수정할 때 모든 값을 수정하는 경우보단 일부만 수정하는 경우가 훨씬 많다.
 따라서 _엔티티를 수정할 땐 병합보다 변경 감지를 사용_ 하는 것이 좋다
+
+## N + 1 문제
+N + 1 문제는 XToOne(OneToOne, ManyToOne) 관계인 엔티티를 조회할 때 발생한다. 
+
+다음과 같이 엔티티가 양방향 연관관계에 있다.
+
+![ER Diagram](https://user-images.githubusercontent.com/83766322/222296083-d4191c66-af67-4c5a-be20-ec1a9029890d.png)
+
+Order 엔티티는 다음과 같고 XToOne은 default가 EAGER(즉시 로딩)이므로 LAZY(지연 로딩)으로 설정한다.
+```java
+import static javax.persistence.FetchType.*;
+
+@Entity
+@Table(name = "orders")
+@Getter
+@NoArgsConstructor(access = AccessLevel.PROTECTED)
+public class Order {
+	
+    @Id @GeneratedValue
+    @Column(name = "order_id")
+    private Long id;
+	
+    @ManyToOne(fatch = LAZY)
+    @JoinColumn(name = "member_id")
+    private Member member;
+	
+    @OneToOne(fetch = LAZY)
+    @JoinColumn(name = "delivery_id")
+    private Delivery delivery;
+	
+}
+```
+
+이제 Order를 모두 조회하는 API를 개발하자. 그리고 Order과 연관된 Member과 Delivery도 함께 조회할 것이다.
+
+```java
+@GetMapping("/api/simple-orders")
+public List<SimpleOrderDto> orders() {
+    List<Order> orders = orderService.searchOrder(new OrderSearch()); // 조회 조건이 비었으므로 order 전체 조회
+    List<SimpleOrderDto> orderDto = orders.stream().map(SimpleOrderDto::new).collect(toList());
+    return orderDto;
+}
+
+@Data
+static class SimpleOrderDto {
+    private Long orderId;
+    private String name;
+    private LocalDateTime orderDate;
+    private OrderStatus orderStatus;
+    private Address address;
+    
+    public SimpleOrderDto(Order o) {
+        orderId = o.getId();
+        name = o.getMember().getName(); // Lazy 강제 초기화
+        orderDate = o.getOrderDate(); 
+        orderStatus = o.getStatus();
+        address = o.getDelivery().getAddress(); // Lazy 강제 초기화
+    }
+}
+```
+코드를 살펴보면 엔티티가 아닌 Dto로 반환했다. 
+그리고 지금 Dto는 엔티티에 의존하고 있다. 
+토픽과 다른 얘기지만, Dto는 엔티티를 의존해도 되지만 엔티티는 Dto를 의존해선 안된다.
+Dto는 하나의 API에서 사용되지만 엔티티는 정말 많은 곳에서 사용된다. 
+따라서 다른 글에서 말했듯이 엔티티는 최대한 순수해야 하므로 Dto를 의존해선 안된다.
+
+그리고 LAZY를 강제 초기화하여 Order과 연관된 Member와 Delivery를 조회한다.
+이때 N + 1문제가 발생한다. Order를 조회했을 때 결과의 수가 N이라고 하자.
+Member와 Delivery를 조회하는 쿼리가 N번만큼 실행된다. 
+
+결국 최악의 경우 Order를 조회하는 쿼리 1번, Member를 조회하는 쿼리 N번, Delivery를 조회하는 쿼리 N번이 실행된다.
+
+왜 최악의 경우일까?
+만약 서로 다른 주문 A, B는 동일한 회원 C의 주문이다. 
+A 주문에 대하여 회원 C을 조회했다면 이제 회원 C는 영속성 컨텍스트가 관리하는 엔티티이다.  
+다음으로 B 주문에 대하여 회원 C를 조회하는데 이미 영속성 컨텍스트에 있으므로 DB가 아닌 영속성 컨텍스트에서 가져온다.
+이러한 경우에 Member를 조회하는 쿼리가 N - 1번 실행된다.
+
+그렇다면 이러한 N + 1 문제를 어떻게 해결할까? fetch join을 사용하여 조회하면 해결된다.
+따라서 fetch join을 토픽으로 새로운 글을 작성하려고 한다.
 
 ## 후기
 아직 웹 계층 아키텍처에 대해 정확히 모르겠다.
