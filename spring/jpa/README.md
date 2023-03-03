@@ -218,7 +218,7 @@ public void updateItem(Long itemId, UpdateItemDto param) {
 따라서 _엔티티를 수정할 땐 병합보다 변경 감지를 사용_ 하는 것이 좋다
 
 ## N + 1 문제
-N + 1 문제는 XToOne(OneToOne, ManyToOne) 관계인 엔티티를 조회할 때 발생한다. 
+N + 1 문제는 지연 로딩의 엔티티를 조회할 때 발생한다. 
 
 다음과 같이 엔티티가 양방향 연관관계에 있다.
 
@@ -291,11 +291,151 @@ Member와 Delivery를 조회하는 쿼리가 N번만큼 실행된다.
 왜 최악의 경우일까?
 만약 서로 다른 주문 A, B는 동일한 회원 C의 주문이다. 
 A 주문에 대하여 회원 C을 조회했다면 이제 회원 C는 영속성 컨텍스트가 관리하는 엔티티이다.  
+
 다음으로 B 주문에 대하여 회원 C를 조회하는데 이미 영속성 컨텍스트에 있으므로 DB가 아닌 영속성 컨텍스트에서 가져온다.
 이러한 경우에 Member를 조회하는 쿼리가 N - 1번 실행된다.
 
 그렇다면 이러한 N + 1 문제를 어떻게 해결할까? fetch join을 사용하여 조회하면 해결된다.
 따라서 fetch join을 토픽으로 새로운 글을 작성하려고 한다.
+
+## JPQL
+JPQL에 대한 설명이 길어질 것 같은데 폴더를 따로 옮겨야 할지 모르겠다.
+
+### fetch join을 통해 N + 1 문제 해결
+fetch join을 통해서 앞서 말한 N + 1 문제를 해결할 수 있다.
+
+아래는 [예시](#N-+-1-문제)에서 발생한 문제를 fetch join으로 해결하는 코드이다.
+
+```java
+public List<Order> findAllWithMemberDelivery() {
+    return em.createQuery(
+            "select o from Order o"
+            + " join fetch o.member m"
+            + " join fetch o.delivery d", Order.class)
+            .getResultList();
+}
+```
+fetch join을 사용하여 **단 한 번의 쿼리로** Order과 연관된 Member와 Delivery 엔티티를 가져올 수 있다.
+지연 로딩인 엔티티 중 원하는 엔티티만 함께 조회하면 된다. 
+
+이때 각 엔티티의 속성을 모두 조회한다. 
+예를 들어 Member의 속성이 이름, 이메일, 전화번호, 주소라면 우리는 Member의 이름만 원했음에도 Member의 속성들을 모두 조회한다.
+따라서 select 절이 매우 길어지고 퍼올리는 데이터 양이 크므로 네트워크 용량이 커진다.
+
+이에 대한 대안으로 아래와 같이 처음부터 Dto로 조회하는 방법이 있다.
+```java
+public List<SimpleOrderQueryDto> findOrderDtos() {
+    return em.createQuery(
+            "select new com.study.jpaproject.dto.SimpleOrderQueryDto(o.id, m.name, d.address) "
+                    + "from Order o"
+                    + " join fetch o.member m"
+                    + " join fetch  o.delivery d", SimpleOrderQueryDto.class
+    ).getResultList();
+}
+
+@Data
+public class SimpleOrderQueryDto {
+	
+	private Long orderId;
+	private String name;
+	private Address address;
+
+	public SimpleOrderQueryDto(Long orderId, String name, Address address) {
+		this.orderId = orderId;
+		this.name = name;
+		this.address = address;
+	}
+	
+}
+```
+참고로 다른 예제처럼 생성자에 엔티티만 넘긴다고 Order의 o를 넘기면 안된다.
+엔티티가 아닌 식별자(Long)만 넘어간다.
+
+처음부터 원하는 속성만 조회했으므로 쿼리의 select 절이 짧아졌다. 
+따라서 네트워크 용량이 최적화 되었다.
+하지만 Repository에서 Dto를 조회한다는 점은 여러 문제가 발생한다.
+
+- Repository가 Presentation에 의존한다.
+  Repository는 Data Access 계층이다. 따라서 Presentation 계층, API 스펙에 의존한다는 것은 계층이 깨졌다는 것이다.
+- Repository 재사용성이 떨어진다. 
+  Controller가 Repository로부터 엔티티를 받아서 Dto로 변환하는 것은 재사용성이 높다.
+  하지만 처음부터 Dto로 받는 메서드가 있다면 다른 API에서 사용하지 못할 것이다.
+- 네트워크 용량의 최적화가 미비하다. 
+
+결론은 트래픽이 매우 많이 들어오는 API라면 고려할 필요가 있다.  
+그리고 Dto를 반환하는 메서드를 작성했다면 이러한 메서드를 위한 Repository를 따로 생성하는 것이 좋다. 
+
+### fetch join의 distinct
+
+### fetch join vs 일반 join
+
+## 컬렉션 조회의 문제
+앞선 N + 1 문제에서 예시로 XToOne 관계만 보여주었다. 
+
+이번엔 XToMany 관계의 엔티티를 조회할 때 발생하는 문제이다. 이러한 조회에서 N + 1 문제 외에 다른 문제가 발생한다. 
+
+다음과 같이 엔티티가 양방향 연관관계에 있다. 이번 글에서 OrderItem과 Item에 대한 코드는 생략한다.
+
+![ER Diagram](https://user-images.githubusercontent.com/83766322/222725344-177b7393-6d0c-4eca-9f52-8068ebdc6b96.png)
+
+Order 엔티티는 다음과 같다. XToMany 관계에서는 지연 로딩(LAZY)이 default이므로 따로 설정은 하지 않는다.
+
+```java
+@Entity
+@Table(name = "orders")
+@Getter
+@NoArgsConstructor(access = AccessLevel.PROTECTED)
+public class Order {
+	
+    @Id @GeneratedValue
+    @Column(name = "order_id")
+    private Long id;
+	
+    @OneToMany(mappedBy = "order")
+	private List<OrderItem> orderItems = new ArrayList<>();
+
+}
+```
+
+그리고 Order를 모두 조회하는 API를 개발한다. 이때 Order과 연관된 OrderItem 리스트도 함께 조회한다.
+
+```java
+@GetMapping("/api/orders")
+public List<OrderDto> orders() {
+    List<Order> orders = orderRepository.findWithItems();
+    List<OrderDto> orderDtos = orders.stream()
+                                    .map(OrderDto::new)
+                                    .collect(toList());
+    
+    return orderDtos;
+}
+
+@Data
+static class OrderDto {
+    private List<OrderItemDto> orderItems;
+    
+    public OrderDto(Order o) {
+        orderItemDto = o.getOrderItems()
+                        .stream()
+                        .map(OrderItemDto::new)
+                        .collect(toList());
+    }
+}
+
+@Data
+static class OrderItemDto {
+    private int totalPrice;
+
+    public OrderItemDto(OrderItem oi) {
+      totalPrice = oi.getTotalPrice(); // Lazy 강제 초기화
+    }
+}
+```
+코드를 살펴보면 Order 안의 OrderItem 모두를 Dto로 변환하여 반환했다.
+응답으로 내보낼 때 엔티티와의 의존을 모두 끊어준 뒤 내보내야 한다.
+
+컬렉션 조회에서도 N + 1 문제가 발생한다. 
+
 
 ## 후기
 아직 웹 계층 아키텍처에 대해 정확히 모르겠다.
