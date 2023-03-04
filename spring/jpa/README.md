@@ -1,7 +1,11 @@
 # Spring/JPA
 1. [요청과 응답으로 엔티티 대신 DTO 사용](#요청과-응답으로-엔티티-대신-DTO-사용)
-2. [엔티티 수정은 병합(merge)보다 변경 감지(Dirty Checking)](#엔티티-수정은-병합(merge)보다-변경-감지(Dirty-Checking))
-3. [N + 1 문제](#N-+-1-문제)
+2. [엔티티 수정은 병합(merge)보다 변경 감지(Dirty Checking)](#엔티티-수정은-병합merge보다-변경-감지dirty-checking)
+3. [N + 1 문제](#n--1-문제)
+4. [JPQL](#jpql)
+   - [fetch join을 통해 N + 1 문제 해결](#fetch-join을-통해-n--1-문제-해결)
+   - [fetch join의 distinct](#fetch-join의-distinct)
+   - [fetch join vs 일반 join](#fetch-join-vs-일반-join)
 
 ## 요청과 응답으로 엔티티 대신 DTO 사용
 
@@ -298,13 +302,15 @@ A 주문에 대하여 회원 C을 조회했다면 이제 회원 C는 영속성 �
 그렇다면 이러한 N + 1 문제를 어떻게 해결할까? fetch join을 사용하여 조회하면 해결된다.
 따라서 fetch join을 토픽으로 새로운 글을 작성하려고 한다.
 
-## JPQL
+# JPQL
+
 JPQL에 대한 설명이 길어질 것 같은데 폴더를 따로 옮겨야 할지 모르겠다.
 
-### fetch join을 통해 N + 1 문제 해결
+## fetch join을 통해 N + 1 문제 해결
+
 fetch join을 통해서 앞서 말한 N + 1 문제를 해결할 수 있다.
 
-아래는 [예시](#N-+-1-문제)에서 발생한 문제를 fetch join으로 해결하는 코드이다.
+아래는 [예시](#N-1-문제)에서 발생한 문제를 fetch join으로 해결하는 코드이다.
 
 ```java
 public List<Order> findAllWithMemberDelivery() {
@@ -365,14 +371,9 @@ public class SimpleOrderQueryDto {
 결론은 트래픽이 매우 많이 들어오는 API라면 고려할 필요가 있다.  
 그리고 Dto를 반환하는 메서드를 작성했다면 이러한 메서드를 위한 Repository를 따로 생성하는 것이 좋다. 
 
-### fetch join의 distinct
+## fetch join의 distinct
 
-### fetch join vs 일반 join
-
-## 컬렉션 조회의 문제
-앞선 N + 1 문제에서 예시로 XToOne 관계만 보여주었다. 
-
-이번엔 XToMany 관계의 엔티티를 조회할 때 발생하는 문제이다. 이러한 조회에서 N + 1 문제 외에 다른 문제가 발생한다. 
+XToMany 관계의 엔티티를 fetch join을 사용하여 조회하면 N + 1 문제를 해결할 수 있지만 또 다른 문제가 발생한다.
 
 다음과 같이 엔티티가 양방향 연관관계에 있다. 이번 글에서 OrderItem과 Item에 대한 코드는 생략한다.
 
@@ -396,7 +397,6 @@ public class Order {
 
 }
 ```
-
 그리고 Order를 모두 조회하는 API를 개발한다. 이때 Order과 연관된 OrderItem 리스트도 함께 조회한다.
 
 ```java
@@ -434,8 +434,74 @@ static class OrderItemDto {
 코드를 살펴보면 Order 안의 OrderItem 모두를 Dto로 변환하여 반환했다.
 응답으로 내보낼 때 엔티티와의 의존을 모두 끊어준 뒤 내보내야 한다.
 
-컬렉션 조회에서도 N + 1 문제가 발생한다. 
+마지막으로 OrderRepository에 findWithItems 메서드이다.
+```java
+public List<Order> findWithItems() {
+    return em.createQuery(
+                    "select o from Order o" +
+                    " join fetch o.orderItems oi", Order.class)
+            .getResultList();
+}
+```
+fetch join을 사용해서 양방향 연관관계의 OrderItem을 조회할 때 발생하는 N + 1문제를 해결했지만 또 다른 문제가 발생했다. 
 
+Order A가 OrderItem B와 OrderItem C를 참조하고 있을 때 Order A가 두 번 조회되는 현상이 발생했다.
+즉, **Order이 참조하고 있는 OrderItem 개수 N만큼 조회된다**는 문제가 발생했다.
+
+먼저 fetch join을 사용하면 데이터베이스에 inner join 쿼리가 전달된다.
+따라서 데이터베이스는 다음과 같은 결과를 보여준다. 
+| order_id | order_item_id |
+|----------|---------------|
+| A        | B             |
+| A        | C             |
+
+JPA는 데이터베이스의 row 수만큼 컬렉션을 만든다. 
+결국은 동일한 Order 엔티티가 두 번 조회된다.
+동일한 엔티티라는 뜻은 참조하는 메모리가 같다는 뜻이다. 
+
+```java
+public void orders() {
+    orderRepository.findWithItems().stream().forEach(System.out::println)
+}
+/**
+ * com.study.jpaproject.domain.Order@52091390
+ * com.study.jpaproject.domain.Order@52091390 
+ */
+```
+
+fetch join의 **distinct**를 사용하면 위와 같은 문제를 해결할 수 있다.
+OrderRepository의 findWithItems 메서드를 고쳐보자.
+```java
+public List<Order> findWithItems() {
+    return em.createQuery(
+                    "select distinct o from Order o" +
+                    " join fetch o.orderItems oi", Order.class)
+            .getResultList();
+}
+```
+데이터베이스에 distinct 쿼리가 전달되었지만 여전히 row 수는 동일하다.
+하지만 컬렉션에 Order가 중복되는 문제는 사라졌다.
+
+데이터베이스는 모든 컬럼의 값이 같아야 동일한 데이터라고 판단한다.
+반면에 JPA는 식별자(order_id)가 같으면 동일한 엔티티라고 판단한다. 
+따라서 distinct를 사용하면 JPA가 동일한 엔티티에 대하여 중복을 막아준다.
+
+## fetch join vs 일반 join
+
+fetch join은 결국 inner join과 다름 없는것 같다. 그런데 왜 연관된 엔티티를 조회할 때 일반 join이 아닌 fetch join을 사용하는 것일까?
+
+먼저 일반 join은 실행 시 **연관된 엔티티를 함께 조회하지 않는다.** 아래와 같이 Member를 join했다면 select 절에 지정한 엔티티, 즉 Order만 조회한다.
+```java
+public List<Order> ordinaryJoin() {
+    return em.createQuery(
+            "select o from Order o" +
+            " join o.member m", Order.class
+    ).getResultList();
+}
+```
+반대로 fetch join은 **연관된 엔티티도 함께 조회**, 즉 즉시 로딩을 수행한다.
+
+### back / [up](#springjpa)
 
 ## 후기
 아직 웹 계층 아키텍처에 대해 정확히 모르겠다.
