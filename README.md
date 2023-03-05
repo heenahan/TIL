@@ -10,3 +10,5 @@
         - [fetch join을 통해 N + 1 문제 해결](https://github.com/heenahan/TIL/tree/main/spring/jpa#fetch-join을-통해-n--1-문제-해결)
         - [fetch join의 distinct](https://github.com/heenahan/TIL/tree/main/spring/jpa#fetch-join의-distinct)
         - [fetch join vs 일반 join](https://github.com/heenahan/TIL/tree/main/spring/jpa#fetch-join-vs-일반-join)
+         - [fetch join의 한계](https://github.com/heenahan/TIL/tree/main/spring/jpa#fetch-join의-한계)
+    - [Hibernate의 Batch Fetching과 Legacy 전략](https://github.com/heenahan/TIL/tree/main/spring/jpa#hibernate의-batch-fetching과-legacy-전략)

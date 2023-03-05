@@ -6,6 +6,8 @@
    - [fetch join을 통해 N + 1 문제 해결](#fetch-join을-통해-n--1-문제-해결)
    - [fetch join의 distinct](#fetch-join의-distinct)
    - [fetch join vs 일반 join](#fetch-join-vs-일반-join)
+   - [fetch join의 한계](#fetch-join의-한계)
+5. [Hibernate의 Batch Fetching과 Legacy 전략](#hibernate의-batch-fetching과-legacy-전략)
 
 ## 요청과 응답으로 엔티티 대신 DTO 사용
 
@@ -300,7 +302,7 @@ A 주문에 대하여 회원 C을 조회했다면 이제 회원 C는 영속성 �
 이러한 경우에 Member를 조회하는 쿼리가 N - 1번 실행된다.
 
 그렇다면 이러한 N + 1 문제를 어떻게 해결할까? fetch join을 사용하여 조회하면 해결된다.
-따라서 fetch join을 토픽으로 새로운 글을 작성하려고 한다.
+따라서 [fetch join을 토픽으로 새로운 글을 작성](#jpql)하려고 한다.
 
 # JPQL
 
@@ -501,6 +503,135 @@ public List<Order> ordinaryJoin() {
 ```
 반대로 fetch join은 **연관된 엔티티도 함께 조회**, 즉 즉시 로딩을 수행한다.
 
+## fetch join의 한계
+
+fetch join을 공부하면서 가장 어려웠던 부분이다. 하지만 이해한 것을 바탕으로 최대한 적어보려고 한다.
+
+### 1. fetch join 대상에는 별칭을 줄 수 없다.
+fetch join 대상에는 별칭을 줄 수 없지만 몇 가지 예외가 있다.
+- **fetch join을 여러 단계로 수행할 경우**
+  ![ER Diagram](https://user-images.githubusercontent.com/83766322/222725344-177b7393-6d0c-4eca-9f52-8068ebdc6b96.png)
+  
+  다음과 같이 엔티티가 관계를 맺고 있을 때 Order에서 OrderItem을 그리고 OrderItem에서 Item 조회하는 코드는 아래와 같다. 
+  
+  ```java
+  List<Order> orders = em.createQuery(
+                "select o from Order o" +
+                " join fetch o.orderItems oi" +
+                " join fetch oi.item i", Order.class)
+                .getResultList();
+  ```
+  
+  이렇게 fetch join 대상의 별칭을 이용해 여러 단계의 fetch join을 수행할 수 있다.
+
+- **데이터 무결성을 해치지 않는 경우**
+  
+  먼저 데이터 무결성을 해치는 경우를 살펴보자.
+
+  Order입장에서 OrderItem과 @OneToMany 관계이다. 즉, Order은 OrderItem에 대한 리스트를 가지고 있다.
+  
+  Order A가 OrderItem B와 C랑 관계를 맺고 있고 Order를 통해 OrderItem을 조회하려고 한다. 따라서 다음 코드를 실행했을 때 데이터베이스에서 결과가 어떻게 나타나는지 확인하자.
+
+  ![Order & OrderItem](https://user-images.githubusercontent.com/83766322/222947913-06eead93-a8fc-4069-9cd1-8a3bce0c965c.png)
+  
+  ```java
+  List<Order> orders1 = em.createQuery(
+                "select o from Order o" +
+                " join fetch o.orderItems oi", Order.class)
+                .getResultList();
+  ```
+  
+  [fetch join의 distinct](#fetch-join의-distinct)에서 말했다싶이 다음과 같이 나타난다. 
+  
+  | order_id | order_item_id | order_item_price |
+  |----------|---------------|------------------|
+  | A        | B             | 10000            |
+  | A        | C             | 20000            |
+  
+  그런데 fetch join 대상인 OrderItem에 대하여 필터링을 한다고 하자. OrderItem의 price가 10000원 초과라는 조건문을 where절에 넣어준다. 그리고 다음 코드를 실행했을 때 데이터베이스의 결과는 아래와 같다. 
+  
+  ```java
+  List<Order> orders2 = em.createQuery(
+            "select o from Order o" +
+            " join fetch o.orderItems oi" +
+            " where oi.orderPrice > 10000", Order.class)
+            .getResultList();
+  ```
+
+  | order_id | order_item_id | order_item_price |
+  |----------|---------------|------------------|
+  | A        | C             | 20000            |
+  
+  식별자가 A인 Order 엔티티는 식별자가 B와 C인 OrderItem 엔티티를 가지고 있는게 맞다. 그런데 orders2 리스트의 Order A는 OrderItem C만 가지게 된다. 따라서 **데이터 무결성이 깨졌다.**
+ 
+  반대로 데이터 무결성이 깨지지 않는 경우이다.
+
+  Order 입장에서 Member과 @ManyToOne 관계이다. Order A와 Member C 그리고 Order B와 Member D와 관계를 맺고 있다고 하자. Order를 통해 Member를 조회하려고 한다. 아래는 코드와 코드를 실행했을 때 데이터베이스의 결과이다.
+
+  ```java
+  List<Order> orders3 = em.createQuery(
+				"select o from Order o" +
+				" join fetch o.member m", Order.class)
+                .getResultList();
+  ```
+  | order_id | member_id | member_name |
+  |----------|-----------|-------------|
+  | A        | C         | memberC     |
+  | B        | D         | memberD     |
+ 
+  fetch join의 대상인 Member에 대하여 이름이 memberC인 사람만 조회하면 다음과 같다.
+
+  ```java
+  String memberName = "memberC";
+  List<Order> orders4 = em.createQuery(
+            "select o from Order o" +
+            " join fetch o.member m" +
+            " where m.name =: memberName", Order.class)
+            .setParameter("memberName", memberName)
+            .getResultList();
+  ```
+  | order_id | member_id | member_name |
+  |----------|-----------|-------------|
+  | A        | C         | memberC     |
+
+  orders4 리스트에서 식별자가 A인 Order 엔티티는 여전히 Member C와 관계를 맺고 있고 **데이터 무결성이 깨지지 않았다.** 이와 같이 데이터가 일관성을 유지하는 경우 fetch join 대상에 별칭을 줄 수 있다.
+
+### 2. 둘 이상의 컬렉션은 fetch join 할 수 없다.
+다음과 같은 관계일 때 Member를 통해 Order를 그리고 Order를 통해 OrderItem을 조회한다고 하자.
+
+![ER Diagram](https://user-images.githubusercontent.com/83766322/222956495-1c1efd43-e8b8-43c0-acfd-d1b4489c6b1f.png)
+
+컬렉션 조회 시 Many에 맞춰 데이터가 증가된다. 예를 들어 Member 하나가 Order N개와 연관되어 있고
+각 Order은 OrderItem M개와 연관되어 있다고 가정하자. 겨우 Member 하나만 조회하는 데에 데이터베이스의 row는 N * M만큼이 늘어날 것이고 엄청난 데이터 중복이 발생한다.
+
+### 3. 컬렉션 fetch join 시 페이징이 불가하다.
+
+XToOne과 같이 단일 값 연관 필드와 fetch join을 해도 페이징할 수 있다. 
+하지만 XToMany와 같이 컬렉션 연관 필드와 fetch join을 하면 페이징이 불가능하다.
+
+Order과 OrderItem 관계는 생략한다. Order를 통해 OrderItem을 조회하면서 Order를 기준으로 페이징을 하고 싶다. 따라서 다음과 같은 코드를 작성했다.
+
+```java
+List<Order> orders = em.createQuery(
+        "select distinct o from Order o" +
+        " join fetch o.orderItems oi", Order.class)
+        .setFirstResult(0) // 페이징 메서드
+        .setMaxResults(1)
+        .getResultList();
+```
+
+이 코드는 원하는 대로 리스트에 첫번째 Order만 담아있다. 하지만 하이버네이트는 다음과 같은 경고 로그를 남긴다.
+
+> HHH000104: firstResult/maxResults specified with collection fetch; applying in memory!
+
+페이징 쿼리를 전달하지 않고 **데이터베이스에서 모든 데이터를 가져온 다음 메모리에서 페이징을 한다**는 경고이다. Order의 데이터가 적을 경우 괜찮지만 데이터가 많아진다면 문제가 발생할 수 있음을 알 수 있다.
+
+컬렉션 조회 시 Order은 OrderItem 개수에 맞춰 중복 조회가 발생한다. 따라서 Order를 기준으로 페이징하기 어려우니 JPA는 위와 같은 전략을 통해 페이징을 한다.
+
+그렇다면 컬렉션 fetch join 시 어떻게 페이징을 할 수 있을까? [하이버네이트의 batch-fetch size](#hibernate의-batch-fetching과-legacy-전략)를 지정하면 된다. 
+
+## Hibernate의 Batch Fetching과 Legacy 전략 
+
 ### back / [up](#springjpa)
 
 ## 후기
@@ -511,5 +642,5 @@ public List<Order> ordinaryJoin() {
 
 ## 참조
 - https://jojoldu.tistory.com/603
-
+- https://docs.jboss.org/hibernate/orm/4.2/manual/en-US/html/ch20.html#performance-fetching-batch
 
