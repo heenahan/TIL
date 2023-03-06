@@ -7,7 +7,8 @@
    - [fetch join의 distinct](#fetch-join의-distinct)
    - [fetch join vs 일반 join](#fetch-join-vs-일반-join)
    - [fetch join의 한계](#fetch-join의-한계)
-5. [Hibernate의 Batch Fetching과 Legacy 전략](#hibernate의-batch-fetching과-legacy-전략)
+5. [Hibernate의 Batch Fetching](#hibernate의-batch-fetching)
+6. [적당한 Batch-Size와 Legacy 전략](#적당한-batch-size와-legacy-전략)
 
 ## 요청과 응답으로 엔티티 대신 DTO 사용
 
@@ -451,14 +452,16 @@ Order A가 OrderItem B와 OrderItem C를 참조하고 있을 때 Order A가 두 
 즉, **Order이 참조하고 있는 OrderItem 개수 N만큼 조회된다**는 문제가 발생했다.
 
 먼저 fetch join을 사용하면 데이터베이스에 inner join 쿼리가 전달된다.
-따라서 데이터베이스는 다음과 같은 결과를 보여준다. 
+따라서 데이터베이스는 다음과 같은 결과를 보여준다.
+
 | order_id | order_item_id |
 |----------|---------------|
 | A        | B             |
 | A        | C             |
 
 JPA는 데이터베이스의 row 수만큼 컬렉션을 만든다. 
-결국은 동일한 Order 엔티티가 두 번 조회된다.
+결국은 동일한 Order 엔티티가 두 번 조회된다. 표의 간략화를 위해 식별자만 나타냈지만 실제로는 **Order에 대한 모든 정보를 가져오게 되므로** 컬럼 수가 매우 늘어날 것이고 중복되는 데이터가 많다. 
+
 동일한 엔티티라는 뜻은 참조하는 메모리가 같다는 뜻이다. 
 
 ```java
@@ -628,9 +631,121 @@ List<Order> orders = em.createQuery(
 
 컬렉션 조회 시 Order은 OrderItem 개수에 맞춰 중복 조회가 발생한다. 따라서 Order를 기준으로 페이징하기 어려우니 JPA는 위와 같은 전략을 통해 페이징을 한다.
 
-그렇다면 컬렉션 fetch join 시 어떻게 페이징을 할 수 있을까? [하이버네이트의 batch-fetch size](#hibernate의-batch-fetching과-legacy-전략)를 지정하면 된다. 
+그렇다면 컬렉션 fetch join 시 어떻게 페이징을 할 수 있을까? [하이버네이트의 batch-fetch size](#hibernate의-batch-fetching과-legacy-전략)를 지정하면 된다.
 
-## Hibernate의 Batch Fetching과 Legacy 전략 
+## Hibernate의 Batch Fetching
+
+fetch join의 한계에서 XToMany 관계는 fetch join 시 페이징이 어렵다고 했다. 
+
+따라서 hibernate.default_batch_fetch_size를 설정해 이러한 한계를 돌파할 수 있다.
+
+```yml
+# application.yml
+jpa :
+    hibernate :
+        default_batch_fetch_size : 100
+```
+
+이 전략을 사용했을 때 어떻게 동작하는지 예제로 보여주겠다.
+
+다음과 같이 Order이 Mebmer와 OrderItem과 관계를 맺고 있다.
+
+![ER Diagram](https://user-images.githubusercontent.com/83766322/222956495-1c1efd43-e8b8-43c0-acfd-d1b4489c6b1f.png)
+
+그리고 데이터는 다음과 같이 들어있다. 데이터가 한 개 뿐이지만 전략을 설명하는 데에 큰 무리가 없을 것이다.
+
+![image](https://user-images.githubusercontent.com/83766322/223011961-8a78ced2-0746-4c83-941a-845381f3ae2f.png)
+
+Order를 조회하면서 Member와 OrderItem을 함께 조회하려고 한다. 또한 Order을 기준으로 페이징하려고 한다.
+
+먼저 XToOne 관계는 fetch join을 한 뒤, 페이징을 한다. Order이 하나뿐 이므로 만약 offset이 0이고 limit가 100일 때, 하나의 Order만 검색된다. 
+
+```java
+public List<Order> findWithMember(int offset, int limit) {
+		return em.createQuery(
+				"select o from Order o" +
+                " join fetch o.member m", Order.class)
+                .setFirstResult(offset)
+                .setMaxResults(limit)
+                .getResultList();
+}
+```
+| order_id | member_id |
+|----------|-----------|
+| A        | B         |
+
+그리고 Order를 Dto로 변환할 때 지연 로딩(Lazy)인 컬렉션(OrderItem)을 강제 초기화 한다. [이 글](#fetch-join의-distinct)을 참고하자.
+
+컬렉션이 강제 초기화될 때 아래와 같은 쿼리가 실행된다. findWithMember로 조회된 Order의 아이디를 IN 절에 넣는다. 그리고 OrderItem 테이블에서 Order 리스트와 연관된 데이터만 가져온다. 
+
+> select * from order_item where order_id in (A);
+
+| order_item_id | order_id |
+|---------------|----------|
+| C             | A        |
+| D             | A        |
+
+처음에 default_batch_fetch_size를 100으로 설정했다. 이 숫자는 IN절의 파라미터 수를 100으로 제한한다는 뜻이다.
+
+이 전략의 장점은 무엇일까?
+
+### 1. 데이터 중복이 없다.
+
+먼저 컬렉션을 fetch join 했을 때 데이터 중복이 발생한다고 설명했다. Order에 대한 모든 정보가 OrderItem의 개수만큼 늘어난다면 데이터베이스에서 전송되는 데이터 양이 엄청날 것이다.
+
+반대로 IN 절을 사용해 Order과 연관되어 있는 모든 OrderItem의 정보만을 가져올 뿐, Order의 정보는 전송되지 않는다. 따라서 데이터베이스에서 전송되는 양이 훨씬 줄어든다. 
+
+### 2. N + 1 문제를 해결한다. 
+만약 batch_fetch_size를 지정하지 않았다면 OrderItem을 가져올 때 Order 리스트의 사이즈(N)만큼 쿼리를 전송할 것이다.
+
+하지만 100으로 지정함으로써 1 + 1번의 쿼리를 전송했다. 첫 번째는 Order과 Member를 inner join하고 페이징하는 쿼리이다. 두 번째는 IN절을 사용해 Order과 연관된 OrderItem을 조회하는 쿼리이다.
+
+만약 Order 리스트의 사이즈가 200이라면 IN절의 파라미터를 100으로 제한했으므로 3번의 쿼리가 전송된다.
+
+Member와 OrderItem 둘 다 fetch join을 한다면 단 하나의 쿼리가 전송될 것이다. 하지만 데이터 중복이 발생하므로 DB에서 전송되는 데이터 양이 크다.
+
+반대로 Member만 fetch join을 하고 OrderItem은 IN절로 가져오다면 전송되는 쿼리 수는 늘어난다. 하지만 데이터 중복이 발생하지 않으므로 DB에서 전송되는 데이터 양이 적다.
+
+## 적당한 Batch-Size와 Legacy 전략 
+
+[이 글](#hibernate의-batch-fetching)과 연결되는 글이다.
+
+이번엔 default_batch_fetch_size을 몇으로 지정하면 좋을지에 대해서 이야기 해보자. 
+
+데이터베이스에 따라 IN절 파라미터를 1000으로 제한하기도 한다. 1000이면 데이터베이스에서 한 번에 당겨오는 데이터가 엄청나므로 순간 부하가 발생할 수 있다. 따라서 애플리케이션이 순간 부하를 얼만큼 견딜 수 있는지에 따라 적당히 조절해야 한다.
+
+다음으로 Batch Fetching 전략에 대해 설명한다.
+
+하이버네이트(Hibernate)는 세 개의 서로 다른 Batch Fetching 전략을 제공하는데 Legacy 전략이 default이다.
+
+먼저 default_batch_fetch_size를 15로 두었다. 그리고 offset을 0, limit를 12으로 두어 12개의 Order를 조회했다.
+
+IN절의 파라미터가 최대 15라고 설정했으므로 우리는 쿼리가 두 번 수행되기를 기대하고 있다. 
+하지만 쿼리가 세 번 수행되었다.
+
+> select * from order_item where order_id in (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) 
+>
+> select * from order_item where order_id in (?, ?, ?)
+
+IN절의 파라미터가 10번, 3번으로 나눠졌다. 왜 이렇게 동작할까?
+
+보통 관계형 데이터베이스(RDB)는 미리 쿼리를 파싱(parsing 구문 분석)한 다음 캐싱(caching 저장)한다. 이를 PreparedStatement라고 한다.
+
+default_batch_fetch_size를 100으로 정한다면 다음과 같이 최대 100의 PreparedStatement를 캐싱해야 한다.
+
+select * from table where in (?)<br>
+select * from table where in (?, ?)<br>
+...<br>
+select * from table where in (?, * 100)
+
+이러한 방식은 데이터베이스 입장에서 너무 많은 쿼리를 캐싱하므로 성능이 떨어진다. 따라서 하이버네이트는 Legacy 전략으로 최적화를 시도한다. 
+
+10을 초과하는 크기를 지정했을 때 확실히 이해할 수 있다. 
+크기가 25라면 (25, 12, 10, 9, 8 ... 1) 이렇게 batch size를 나눈다.
+
+batch size를 25로 두고 Order 리스트의 크기가 20이라면 12, 8 크기로 나눠진 뒤 2개의 쿼리가 실행될 것이다.
+
+그 외의 전략에 대한 설명은 생략한다.
 
 ### back / [up](#springjpa)
 
