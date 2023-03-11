@@ -747,6 +747,36 @@ batch size를 25로 두고 Order 리스트의 크기가 20이라면 12, 8 크기
 
 그 외의 전략에 대한 설명은 생략한다.
 
+## OSIV
+
+JPA를 사용하면 애플리케이션 시작 시점에 다음과 같은 경고 로그가 남겨진다.
+
+> spring.jpa.open-in-view is enabled by default. Therefore, database queries may be performed during view rendering. Explicitly configure spring.jpa.open-in-view to disable this warning
+
+Open Session In View(이하 OSIV) 전략을 실행한다는 뜻이다. OSIV는 enable이 default 이다. 
+
+OSIV 전략은 Service 계층에서 Transaction을 시작할 때 커넥션 풀(Connection Poll) 데이터베이스 커넥션을 가져온 뒤 
+API 응답이 끝날 때까지 영속성 컨텍스트와 데이터베이스 커넥션을 유지한다.
+즉, Controller에서 외부 API를 호출하면 응답 대기 시간만큼 데이터베이스 커넥션 자원을 반환하지 않는다.
+
+따라서 Controller나 View 계층에서 지연 로딩이 가능하다는 장점이 있다. 
+하지만 트래픽이 많은 API에서 OSIV 전략을 사용하는 것은 큰 문제가 발생한다.
+
+이 전략은 너무 오랜시간 데이터베이스 커넥션 자원을 사용한다. 
+따라서 트래픽이 많으면 커넥션 풀에서 데이터베이스 커넥션 자원이 부족해지고 이것은 결국 장애로 이어진다.
+
+```yml
+jpa:
+    open-in-view: false
+```
+
+반대로 OSIV 전략을 사용하지 않는다면 트랜잭션을 종료하면 영속성 컨텍스트를 닫고 데이터베이스 커넥션을 반환한다.
+따라서 데이터베이스 커넥션 자원을 낭비하지 않게 된다. 하지만 Controller나 View 계층에서 지연 로딩이 불가능하다.
+따라서 트랜잭션 내에서 모든 지연 로딩을 처리해야 한다.
+
+앞서 지연 로딩을 처리하는 코드는 복잡했다. 
+따라서 OSIV를 끈 상태로 복잡성을 관리하기 위해 커맨드와 쿼리를 분리한다.
+
 ### back / [up](#springjpa)
 
 ## 후기
