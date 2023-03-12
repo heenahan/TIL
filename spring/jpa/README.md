@@ -776,6 +776,39 @@ jpa:
 
 앞서 지연 로딩을 처리하는 코드는 복잡했다. 
 따라서 OSIV를 끈 상태로 복잡성을 관리하기 위해 커맨드와 쿼리를 분리한다.
+Command Query Separation, CQS 패턴이라고 하는데 다음 글에서 자세히 확인할 수 있다. 
+
+먼저 OrderQueryService라는 Service 클래스를 하나 더 생성한다. 
+따라서 주문 도메인에 대한 서비스는 OrderService와 OrderQueryService 이렇게 두 개이다.
+
+OrderService는 핵심 비즈니스인 등록 혹은 수정을 담당한다. 즉, command 메서드를 가지고 있으며 성능은 크게 문제가 되지 않는다. 
+
+하지만 OrderQueryService는 복잡한 화면을 출력하기 위한 query 메서드를 가지고 있다. 
+그리고 화면과 외부 API에 맞춘 서비스는 성능의 최적화가 필요하다.
+
+다음은 OrderQueryService의 일부이며 OSIV를 끈 상태이므로 Transaction 내에서 지연 로딩을 수행하고 있다. 그리고 query 메서드를 가진 서비스는 엔티티를 수정하지 않으므로 읽기 전용 트랜젝션을 사용한다.
+
+```java
+@Service
+@Transactional(readOnly = true)
+@RequiredArgsConstructor
+public class OrderQueryService {
+	
+	private final OrderRepository orderRepository;
+
+	public List<OrderDto> findAll() {
+		List<Order> orders = orderRepository.findAll(new OrderSearch());
+		List<OrderDto> orderDtos = orders.stream()
+				.map(OrderDto::new)
+				.collect(toList());
+		
+		return orderDtos;
+	}
+    
+    // ...
+	
+}
+```
 
 ### back / [up](#springjpa)
 
@@ -788,4 +821,3 @@ jpa:
 ## 참조
 - https://jojoldu.tistory.com/603
 - https://docs.jboss.org/hibernate/orm/4.2/manual/en-US/html/ch20.html#performance-fetching-batch
-
